@@ -185,13 +185,13 @@ class Simple_FB_Instant_Articles {
 		// Modify the content
 		add_filter( 'the_content', array( $this, 'reformat_post_content' ), 1000 );
 		add_action( 'the_content', array( $this, 'append_google_analytics_code' ), 1100 );
-		add_action( 'the_content', array( $this, 'append_ad_code' ), 1100 );
 
 		// Post URL for the feed.
 		add_filter( 'the_permalink_rss', array( $this, 'rss_permalink' ) );
 
 		// Render post content into FB IA format - using DOM object.
 		add_action( 'simple_facebook_ia_reformat_post_content', array( $this, 'render_pull_quotes' ), 10, 2 );
+		add_action( 'simple_facebook_ia_reformat_post_content', array( $this, 'insert_ads' ), 100 );
 
 	}
 
@@ -506,6 +506,45 @@ class Simple_FB_Instant_Articles {
 
 		return $node_html;
 	}
+
+	/**
+	 * Insert Ads.
+	 *
+	 * Rules:
+	 * Ads must be at least 100 words from start.
+	 * Ads must not be within 400 words of another ad.
+	 * Or they must be split by a figure element.
+	 *
+	 * This basic implementation inserts after first break after the first 100 words.
+	 *
+	 * @param \DOMNode $dom dom.
+	 *
+	 * @return void
+	 */
+	public function insert_ads( \DOMNode $dom ) {
+
+		$word_count = 0;
+		$insert_after = 100;
+
+		foreach ( $dom->getElementsByTagName('body')->item(0)->childNodes as $node ) {
+
+			$word_count += str_word_count( $node->textContent );
+
+			if ( $word_count > 150 ) {
+
+				$fragment = $dom->createDocumentFragment();
+				$fragment->appendXML( $this->get_ad_code() );
+				$node->parentNode->insertBefore( $fragment, $node->nextSibling );
+
+				// Break. Only want 1 ad.
+				return;
+
+			}
+
+		}
+
+	}
+
 
 }
 
