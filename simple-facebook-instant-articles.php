@@ -357,34 +357,28 @@ class Simple_FB_Instant_Articles {
 	 */
 	public function render_pull_quotes( \DOMDocument &$dom, \DOMXPath &$xpath ) {
 
-		// Pull quotes - with <cite> element.
-		foreach ( $xpath->query( '//blockquote[descendant::cite]' ) as $node ) {
+		$allowed_html = array(
+			'strong' => array(),
+			'b'      => array(),
+			'em'     => array(),
+			'i'      => array(),
+			'cite'   => array(),
+		);
 
-			// Get and remove <cite> element.
-			$cite = $node->getElementsByTagName( 'cite' )->item( 0 );
-			@$cite->parentNode->removeChild( $cite );
+		foreach ( $xpath->query( '//blockquote' ) as $node ) {
 
-			$pull_quote_html = $this->get_html_for_node( $node );
+			$aside = $dom->createElement( 'aside' );
 
-			// FB AI pull quote format.
-			$fb_pull_quote = sprintf(
-				'<aside>%s<cite>%s</cite></aside>',
-				wp_kses( $pull_quote_html,
-					array(
-						'em'     => array(),
-						'i'      => array(),
-						'b'      => array(),
-						'strong' => array()
-					)
-				),
-				esc_html( $cite->nodeValue )
-			);
+			$node->parentNode->replaceChild( $aside, $node );
 
-			// Replace original pull quotes with FB AI marked up ones.
-			$new_node = $dom->createDocumentFragment();
-			$new_node->appendXML( $fb_pull_quote );
-			$node->parentNode->replaceChild( $new_node, $node );
+			while ( $node->childNodes->length > 0 ) {
+				$child = $node->childNodes->item(0);
+				$node->removeChild($child);
+				$aside->appendChild( $child );
+			}
+
 		}
+
 	}
 
 	/**
@@ -410,6 +404,7 @@ class Simple_FB_Instant_Articles {
 			$figure->appendChild( $node );
 
 		}
+
 	}
 
 	/**
