@@ -422,6 +422,11 @@ class Simple_FB_Instant_Articles {
 	public function load_facebook_scripts( $html, $url, $attr ) {
 		global $wp_embed;
 
+		// Stop - if facebook embed function doesn't exist.
+		if ( ! function_exists( 'jetpack_facebook_add_script' ) ) {
+			return $html;
+		}
+
 		// Use handlers IDs as keys for quicker lookup.
 		$facebook_handlers_ids = array(
 			'facebook'                 => true,
@@ -455,7 +460,7 @@ class Simple_FB_Instant_Articles {
 		}
 
 		// It is a facebook embed - insert script.
-		if ( $is_facebook_embed && function_exists( 'jetpack_facebook_add_script' ) ) {
+		if ( $is_facebook_embed ) {
 			ob_start();
 			jetpack_facebook_add_script();
 			$html .= ob_get_clean();
