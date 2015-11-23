@@ -198,7 +198,7 @@ class Simple_FB_Instant_Articles {
 		add_shortcode( 'caption', array( $this, 'caption_shortcode' ) );
 
 		// Try and fix misc shortcodes.
-		$this->make_shortcode_figure_op_social( 'protected-iframe' );
+		$this->sandbox_shortcodes();
 
 		// Shortcodes - custom galleries.
 		add_shortcode( 'sigallery', array( $this, 'api_galleries_shortcode' ) );
@@ -781,27 +781,58 @@ class Simple_FB_Instant_Articles {
 	/**
 	 * Wrap shortcode output in figure op-social + iframe markup to sandbox functionality.
 	 *
-	 * Used to handle generic shortcodes that we don't really want to mess with might be broken.
+	 * Used to handle generic shortcodes that we can't really mess with.
+	 * Note you will need to manually add any scripts using the filter provided.
 	 *
 	 * @param  string $shortcode_tag Shortcode.
 	 * @return void
 	 */
-	protected function make_shortcode_figure_op_social( $shortcode_tag ) {
+	protected function sandbox_shortcodes( $shortcodes ) {
+
 		global $shortcode_tags;
 
-		if ( ! isset( $shortcode_tags[ $shortcode_tag ] ) ) {
-			return;
+		/**
+		 * Get array of shortcode tags to sandbox.
+		 *
+		 * Filterable so you can add your own here.
+		 *
+		 * @var array
+		 */
+		$shortcodes = apply_filters(
+			'simple_fb_ia_sandbox_output_for_shortcodes',
+			array( 'protected-iframe' )
+		);
+
+		foreach ( $shortcodes as $shortcode_tag ) {
+
+			if ( ! isset( $shortcode_tags[ $shortcode_tag ] ) ) {
+				return;
+			}
+
+			$old_callback = $shortcode_tags[ $shortcode_tag ];
+
+			$shortcode_tags[ $shortcode_tag ] = function() use ( $old_callback ) {
+
+				/**
+				 * Get standard shortcode output.
+				 *
+				 * Filterable, in case you need to add custom scripts/styles here.
+				 *
+				 * @var string HTML.
+				 */
+				$output = apply_filters(
+					'simple_fb_ia_sandboxed_shortcode_output',
+					call_user_func_array( $old_callback, func_get_args() )
+				);
+
+				return sprintf(
+					'<figure class="op-social"><iframe>%s</iframe></figure>',
+					$output
+				);
+
+			};
+
 		}
-
-		$old_callback = $shortcode_tags[ $shortcode_tag ];
-
-		$shortcode_tags[ $shortcode_tag ] = function() use ( $old_callback ) {
-
-			$r = '<figure class="op-social"><iframe>';
-			$r .= call_user_func_array( $old_callback, func_get_args() );
-			$r .= '</iframe></figure>';
-			return $r;
-		};
 	}
 
 	/**
