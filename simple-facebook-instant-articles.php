@@ -1062,24 +1062,40 @@ class Simple_FB_Instant_Articles {
 	 */
 	public function insert_ads( \DOMNode $dom ) {
 
-		$word_count = 0;
-		$insert_after = 100;
+		$count    = 0;
+		$interval = 500;
+		$ad_count = 0;
+
+		// Initial offset.
+		$count += 300;
 
 		foreach ( $dom->getElementsByTagName('body')->item(0)->childNodes as $node ) {
 
-			$word_count += str_word_count( $node->textContent );
+			// Use wordcount for paragraphs.
+			if ( 'p' === $node->nodeName ) {
+				$count += str_word_count( $node->textContent );
+			// Count embeds as 100 words.
+			} elseif ( 'figure' === $node->nodeName ) {
+				$count += 100;
+			}
 
-			if ( $word_count > 150 ) {
+			if ( $count >= $interval ) {
 
 				$fragment = $dom->createDocumentFragment();
-				$fragment->appendXML( $this->get_ad_code() );
+				$fragment->appendXML( $this->render_template( 'script-ad' ) );
 				$node->parentNode->insertBefore( $fragment, $node->nextSibling );
 
-				// Break. Only want 1 ad.
-				return;
+				$count = 0;
+				$ad_count++;
 
 			}
 
+		}
+
+		if ( $ad_count < 1 ) {
+			$fragment = $dom->createDocumentFragment();
+			$fragment->appendXML( $this->render_template( 'script-ad' ) );
+			$node->parentNode->appendChild( $fragment );
 		}
 
 	}
