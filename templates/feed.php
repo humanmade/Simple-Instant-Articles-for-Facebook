@@ -8,10 +8,10 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-// Set RSS header
+// Set RSS header.
 header( 'Content-Type: ' . feed_content_type( 'rss-http' ) . '; charset=' . get_option( 'blog_charset' ), true );
 
-// Use `echo` for first line to prevent any extra characters at start of document
+// Use `echo` for first line to prevent any extra characters at start of document.
 echo '<?xml version="1.0" encoding="' . esc_attr( get_option( 'blog_charset' ) ) . '"?>'; ?>
 
 <rss version="2.0"
@@ -31,33 +31,38 @@ echo '<?xml version="1.0" encoding="' . esc_attr( get_option( 'blog_charset' ) )
 	<description><?php echo esc_html( bloginfo( 'description' ) ); ?></description>
 	<lastBuildDate><?php echo esc_html( mysql2date( 'D, d M Y H:i:s +0000', get_lastpostmodified( 'GMT' ), false ) ); ?></lastBuildDate>
 	<language><?php echo esc_html( bloginfo( 'language' ) ); ?></language>
+
 	<?php
-
-	// Add RSS2 headers
+	// Add RSS2 headers.
 	do_action( 'rss2_head' );
-
-	// How many posts? Let's add a specific filter for this.
-	$num_posts = intval( apply_filters( 'simple_fb_posts_per_rss', get_option( 'posts_per_rss', 10 ) ) );
-
-	// And the default args.
-	$args = array(
-		'posts_per_page' => $num_posts,
-	);
-
-	// Add a filter for all of the args.
-	$args = apply_filters( 'simple_fb_feed_query_args', $args );
-
-	// Kick off the query.
-	$query = new WP_Query( $args );
 	?>
 
-	<?php if ( $query->have_posts() ) : ?>
-		<?php while ( $query->have_posts() ) : $query->the_post(); ?>
+	<?php if ( have_posts() ) : ?>
+		<?php while ( have_posts() ) : the_post(); ?>
+
+			<?php
+
+			// Skip if sponsored.
+			if ( class_exists( '\USAT\Sponsored_Posts' ) && \USAT\Sponsored_Posts::instance()->is_sponsored() )  {
+				continue;
+			}
+
+			// Skip if hidden from feed.
+			if ( (bool) get_post_meta( get_the_ID(), '_lawrence_hide_on_fb_ia_feed', true ) ) {
+				continue;
+			}
+
+			?>
+
 			<item>
 				<title><?php esc_html( the_title_rss() ); ?></title>
-				<link><?php esc_url( the_permalink_rss() ); ?></link>
+				<link><?php the_permalink_rss(); ?></link>
 				<pubDate><?php echo esc_html( mysql2date( 'D, d M Y H:i:s +0000', get_post_time( 'Y-m-d H:i:s', true ), false ) ); ?></pubDate>
-				<dc:creator><?php the_author(); ?></dc:creator>
+				<?php if ( function_exists( 'coauthors' ) ) : ?>
+					<?php coauthors( '</dc:creator><dc:creator>', '</dc:creator><dc:creator>', '<dc:creator>', '</dc:creator>' ); ?>
+				<?php else : ?>
+					<dc:creator><?php the_author(); ?></dc:creator>
+				<?php endif; ?>
 				<guid isPermaLink="false"><?php esc_html( the_guid() ); ?></guid>
 				<description><![CDATA[<?php the_excerpt_rss(); ?>]]></description>
 				<content:encoded><![CDATA[<?php include( 'article.php' ); ?>]]></content:encoded>
@@ -65,4 +70,4 @@ echo '<?xml version="1.0" encoding="' . esc_attr( get_option( 'blog_charset' ) )
 		<?php endwhile; ?>
 	<?php endif; ?>
 </channel>
-</rss><?php exit; ?>
+</rss>

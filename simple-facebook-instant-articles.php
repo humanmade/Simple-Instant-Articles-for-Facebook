@@ -6,8 +6,6 @@ Description: Add support to Facebook Instant Articles
 Author: Jake Spurlock, Human Made Limited
 */
 
-require_once( 'includes/functions.php' );
-
 class Simple_FB_Instant_Articles {
 
 	/**
@@ -62,6 +60,7 @@ class Simple_FB_Instant_Articles {
 		add_action( 'init', array( $this, 'init' ) );
 		add_action( 'init', array( $this, 'add_feed' ) );
 		add_action( 'wp', array( $this, 'add_actions' ) );
+		add_action( 'pre_get_posts', array( $this, 'customise_feed_query' ) );
 
 		// Render post content into FB IA format.
 		add_action( 'simple_fb_pre_render', array( $this, 'setup_content_mods' ) );
@@ -82,8 +81,6 @@ class Simple_FB_Instant_Articles {
 	 */
 	public function init() {
 		add_rewrite_endpoint( $this->endpoint, EP_PERMALINK );
-		register_activation_hook( __FILE__,   'flush_rewrite_rules' );
-		register_deactivation_hook( __FILE__, 'flush_rewrite_rules' );
 	}
 
 	/**
@@ -115,8 +112,18 @@ class Simple_FB_Instant_Articles {
 	 * @return void
 	 */
 	public function render( $post_id ) {
+
 		do_action( 'simple_fb_pre_render', $post_id );
-		include( apply_filters( 'simple_fb_article_template_file', $this->template_path . '/article.php' ) );
+
+		if ( have_posts() ) {
+			the_post();
+
+			$template = apply_filters( 'simple_fb_article_template_file', $this->template_path . '/article.php' );
+
+			if ( 0 === validate_file( $template ) ) {
+				require( $template );
+			}
+		}
 	}
 
 	/**
@@ -141,22 +148,36 @@ class Simple_FB_Instant_Articles {
 		$wp_query->is_404 = false;
 		status_header( 200 );
 
-		$file_name = 'feed.php';
-
-		$user_template_file = apply_filters( 'simple_fb_feed_template_file', trailingslashit( get_template_directory() ) . $file_name );
-
 		// Any functions hooked in here must NOT output any data or else feed will break.
 		do_action( 'simple_fb_before_feed' );
 
-		// Load user feed template if it exists, otherwise use plugin template.
-		if ( file_exists( $user_template_file ) ) {
-			require( $user_template_file );
-		} else {
-			require( $this->template_path . $file_name );
+		$template = trailingslashit( $this->template_path ) . 'feed.php';
+
+		if ( 0 === validate_file( $template ) ) {
+			require( $template );
 		}
 
 		// Any functions hooked in here must NOT output any data or else feed will break.
 		do_action( 'simple_fb_after_feed' );
+	}
+
+	/**
+	 * Set WP query variables for FB IA feed, so we can customise
+	 * what posts are considered for the feed.
+	 *
+	 * @param $query WP_Query object.
+	 */
+	public function customise_feed_query( $query ) {
+
+		$feed_slug = apply_filters( 'simple_fb_feed_slug', $this->token );
+
+		if ( $query->is_main_query() && $query->is_feed( $feed_slug ) ) {
+
+			$query->set( 'posts_per_rss', 25 );
+			$query->set( 'orderby', 'modified' );
+
+			do_action( 'simple_fb_pre_get_posts', $query );
+		}
 	}
 
 	/**
@@ -173,29 +194,49 @@ class Simple_FB_Instant_Articles {
 
 		// Shortcodes - overwrite WP native ones with FB IA format.
 		add_shortcode( 'gallery', array( $this, 'gallery_shortcode' ) );
-		add_shortcode( 'caption', array( $this, 'image_shortcode' ) );
+		add_shortcode( 'caption', array( $this, 'caption_shortcode' ) );
+		add_shortcode( 'polldaddy', array( $this, 'polldaddy_shortcode' ) );
+
+		// Try and fix misc shortcodes.
+		$this->sandbox_shortcode_output( 'protected-iframe' );
 
 		// Shortcodes - custom galleries.
 		add_shortcode( 'sigallery', array( $this, 'api_galleries_shortcode' ) );
+
+		// Shortcodes - remove related lawrence content.
+		add_shortcode( 'lawrence-related', '__return_empty_string' );
+		add_shortcode( 'lawrence-auto-related', '__return_empty_string' );
 
 		// Render social embeds into FB IA format.
 		add_filter( 'embed_handler_html', array( $this, 'reformat_social_embed' ), 10, 3 );
 		add_filter( 'embed_oembed_html', array( $this, 'reformat_social_embed' ), 10, 4 );
 
+		// Fix embeds that need some extra attention.
+		add_filter( 'embed_handler_html', array( $this, 'reformat_facebook_embed' ), 5, 3 );
+		add_filter( 'embed_brightcove', array( $this, 'load_brightcove_scripts' ), 10, 4 );
+
 		// Modify the content.
+		add_filter( 'the_content', array( $this, 'prepend_full_width_media' ), 50 );
 		add_filter( 'the_content', array( $this, 'reformat_post_content' ), 1000 );
-		add_action( 'the_content', array( $this, 'append_google_analytics_code' ), 1100 );
+		add_filter( 'the_content', array( $this, 'append_analytics_code' ), 1100 );
+		add_filter( 'the_content', array( $this, 'append_ad_code' ), 1100 );
 
 		// Post URL for the feed.
 		add_filter( 'the_permalink_rss', array( $this, 'rss_permalink' ) );
 
 		// Render post content into FB IA format - using DOM object.
 		add_action( 'simple_fb_reformat_post_content', array( $this, 'render_pull_quotes' ), 10, 2 );
+		add_action( 'simple_fb_reformat_post_content', array( $this, 'render_images' ), 10, 2 );
+		add_action( 'simple_fb_reformat_post_content', array( $this, 'cleanup_empty_nodes' ), 10, 2 );
+		add_action( 'simple_fb_reformat_post_content', array( $this, 'fix_headings' ), 10, 2 );
+		add_action( 'simple_fb_reformat_post_content', array( $this, 'fix_social_embed' ), 1000, 2 );
 		add_action( 'simple_fb_reformat_post_content', array( $this, 'insert_ads' ), 10, 2 );
+
 	}
 
 	public function rss_permalink( $link ) {
-		return esc_url( $link . $this->endpoint );
+
+		return trailingslashit( $link ) . $this->endpoint;
 	}
 
 	/**
@@ -208,54 +249,120 @@ class Simple_FB_Instant_Articles {
 	 */
 	public function gallery_shortcode( $atts, $content = '' ) {
 
-		// Get the IDs.
-		$ids = explode( ',', $atts['ids'] );
+		// Get the image IDs.
+		$ids = array_map( 'absint', explode( ',', $atts['ids'] ) );
 
-		ob_start(); ?>
-		<figure class="op-slideshow">
-			<?php foreach ( $ids as $id ) : ?>
-				<?php $image = wp_get_attachment_image_src( $id, $this->image_size ); ?>
-				<?php $url   = ( $image[0] ); ?>
-				<figure>
-					<img src="<?php echo esc_url( $url ); ?>" alt="<?php echo esc_attr( get_the_title( $id ) ); ?>">
-					<?php simple_fb_image_caption( $id ); ?>
-				</figure>
-			<?php endforeach; ?>
-		</figure>
-		<?php return ob_get_clean();
+		ob_start();
+
+		echo '<figure class="op-slideshow">';
+
+		foreach ( $ids as $id ) {
+			$this->render_image_markup( $id, $this->get_image_caption( $id ) );
+		}
+
+		echo '</figure>';
+
+		return ob_get_clean();
 	}
 
 	/**
-	 * Caption shortcode - overwrite WP native shortcode.
-	 * Format caption of inserted images into post content into
-	 * FB IA format.
+	 * Caption shortcode.
 	 *
-	 * @param $atts           Array of attributes passed to shortcode.
+	 * Overwrite WP native shortcode.
+	 * Format images in caption shortcodes into FB IA format.
+	 *
+	 * @param array  $atts    Array of attributes passed to shortcode.
 	 * @param string $content The content passed to the shortcode.
 	 *
 	 * @return string|void    FB IA formatted images markup.
 	 */
-	public function image_shortcode( $atts, $content = '' ) {
+	public function caption_shortcode( $atts, $content = '' ) {
 
 		// Get attachment ID from the shortcode attribute.
-		$attachment_id = isset( $atts['id'] ) ? (int) str_replace( 'attachment_', '', $atts['id'] ) : '';
+		$attachment_id = isset( $atts['id'] ) ? (int) str_replace( 'attachment_', '', $atts['id'] ) : null;
 
-		// Get image info.
-		$image     = wp_get_attachment_image_src( $attachment_id, $this->image_size );
-		$image_url = isset( $image[0] ) ? $image[0] : '';
-
-		// Stop - if image URL is empty.
-		if ( ! $image_url ) {
+		if ( ! $attachment_id ) {
 			return;
 		}
 
-		// FB IA image format.
-		ob_start(); ?>
-		<figure>
-			<img src="<?php echo esc_url( $image_url ); ?>" />
-			<?php simple_fb_image_caption( $attachment_id ); ?>
-		</figure>
-		<?php return ob_get_clean();
+		// Get image caption.
+		$reg_ex  = preg_match( '#^<img.*?\/>(.*)$#', trim( $content ), $matches );
+		$caption = isset( $matches[1] ) ? trim( $matches[1] ) : '';
+
+		ob_start();
+		$this->render_image_markup( $attachment_id, $caption );
+		return ob_get_clean();
+	}
+
+	/**
+	 * Polldaddy shortcode.
+	 *
+	 * Overwrite jetpack native shortcode.
+	 * Add the script for each shortcode. Convert in FB IA markup.
+	 *
+	 * @param array  $atts    Array of attributes passed to shortcode.
+	 *
+	 * @return string|void    FB IA formatted polldaddy markup.
+	 *                        Nothing if polldaddy functionality doesn't exist.
+	 */
+	public function polldaddy_shortcode( $atts ) {
+
+		if ( ! class_exists( 'PolldaddyShortcode' ) ) {
+			return;
+		}
+
+		$polldaddy = new PolldaddyShortcode();
+
+		// Get polldaddy markup. Needs to be run first so script vars are set.
+		$html = $polldaddy->polldaddy_shortcode( $atts );
+
+		// Get scripts as they are echo-ed not returned.
+		ob_start();
+		$polldaddy->generate_scripts();
+		$scripts = ob_get_clean();
+
+		return sprintf(
+			'<figure class="op-interactive"><iframe>%s</iframe></figure>',
+			$html . $scripts
+		);
+	}
+
+	/**
+	 * Outputs image markup in FB IA format.
+	 *
+	 * @param int|string $src     Image ID or source to output in FB IA format.
+	 * @param string     $caption Image caption to display in FB IA format.
+	 */
+	public function render_image_markup( $src, $caption = '' ) {
+
+		// Handle passing image ID.
+		if ( is_numeric( $src ) ) {
+			$image = wp_get_attachment_image_src( $src, $this->image_size );
+			$src   = $image ? $image[0] : null;
+		}
+
+		if ( empty( $src ) ) {
+			return;
+		}
+
+		$template = trailingslashit( $this->template_path ) . 'image.php';
+		require( $template );
+	}
+
+	/**
+	 * Get caption for image.
+	 *
+	 * @param int $id Attachment/image ID.
+	 *
+	 * @return string Attachment/image caption, if specified.
+	 */
+	public function get_image_caption( $id ) {
+
+		$attachment_post = get_post( $id );
+
+		if ( $attachment_post && $attachment_post->post_excerpt ) {
+			return trim( $attachment_post->post_excerpt );
+		}
 	}
 
 	/**
@@ -270,35 +377,39 @@ class Simple_FB_Instant_Articles {
 	public function api_galleries_shortcode( $atts ) {
 
 		// Stop - if gallery ID is empty.
-		if ( ! $atts['id'] ) {
+		if ( empty( $atts['id'] ) ) {
 			return;
 		}
 
-		// Stop - if can't get the API gallery.
-		if ( ! $gallery = \USAT\API_Galleries\get_gallery( $atts['id'] ) ) {
+		$gallery = null;
+
+		if ( function_exists( 'usat_newscred_get_gallery' ) ) {
+			$gallery = usat_newscred_get_gallery( $atts['id'], 'sigallery' );
+		} elseif ( function_exists( '\USAT\API_Galleries\get_gallery' ) ) {
+			$gallery = \USAT\API_Galleries\get_gallery( $atts['id'] );
+		}
+
+		if ( ! $gallery ) {
 			return;
 		}
 
-		// Display API gallery in FB IA format.
 		ob_start();
-		?>
 
-		<figure class="op-slideshow">
-			<?php foreach ( $gallery->images as $key => $image ) : ?>
-				<figure>
-					<img src="<?php echo esc_url( $image->url ); ?>" />
-					<?php if ( $image->custom_caption ) : ?>
-						<figcaption><h1><?php echo esc_html( strip_tags( $image->custom_caption ) ); ?></h1></figcaption>
-					<?php endif; ?>
-				</figure>
-			<?php endforeach; ?>
+		echo '<figure class="op-slideshow">';
 
-			<?php if ( $atts['title'] ) : ?>
-				<figcaption><h1><?php echo esc_html( $atts['title'] ); ?></h1></figcaption>
-			<?php endif;?>
-		</figure>
+		foreach ( $gallery->images as $key => $image ) {
 
-		<?php
+			$caption = $image->custom_caption ? $image->custom_caption : $image->caption;
+
+			$this->render_image_markup( $image->url, $caption );
+		}
+
+		if ( $atts['title'] ) {
+			printf( '<figcaption><h1>%s</h1></figcaption>', esc_html( $atts['title'] ) );
+		}
+
+		echo '</figure>';
+
 		return ob_get_clean();
 	}
 
@@ -307,7 +418,7 @@ class Simple_FB_Instant_Articles {
 	 *
 	 * Social embeds Ref: https://developers.facebook.com/docs/instant-articles/reference/social
 	 *
-	 * @param string   $html    HTML markup to be embeded into post sontent.
+	 * @param string   $html    HTML markup to be embeded into post content.
 	 * @param string   $url     The attempted embed URL.
 	 * @param array    $attr    An array of shortcode attributes.
 	 * @param int|null $post_ID Post ID for which embeded URLs are processed.
@@ -316,11 +427,167 @@ class Simple_FB_Instant_Articles {
 	 */
 	public function reformat_social_embed( $html, $url, $attr, $post_ID = null ) {
 
-		return '<figure class="op-social"><iframe>' . $html . '</iframe></figure>';
+		// Stop - if embed markup starts with `<figure class="op`,
+		// which means it's already been converted to FB IA format.
+		if ( false !== strpos( $html, '<figure class="op' ) ) {
+			return $html;
+		}
+
+		$class  = 'op-interactive';
+
+		// FB IA recognised social embeds.
+		$regex_bits = implode( '|', array(
+			'youtu(\.be|be\.com)',
+			'facebook\.com',
+			'twitter\.com',
+			'instagr(\.am|am\.com)',
+			'vine\.co',
+		) );
+
+		if ( preg_match( "/$regex_bits/", $url, $matches ) ) {
+			$class  = 'op-social';
+
+			// Add JS file to embed markup.
+			if ( false !== strpos( $matches[0], 'instagram' ) ) {
+				$html .= $this->return_result_of_print_function( 'jetpack_instagram_add_script' );
+			}
+		}
+
+		return sprintf( '<figure class="%s"><iframe>%s</iframe></figure>', $class, $html );
 	}
 
 	/**
-	 * Setup dom and xpath objects for formatting post content.
+	 * Some markup fixes for embeds.
+	 *
+	 * Remove uneccessary divs/spans WP inserts.
+	 * Unwrap double iframes.
+	 *
+	 * @param DOMDocument $dom   DOM object generated for post content.
+	 * @param DOMXPath    $xpath DOMXpath object generated for post content.
+	 *
+	 * @return void
+	 */
+	public function fix_social_embed( \DOMDocument $dom, \DOMXPath $xpath ) {
+
+		// Matches all divs and spans that have class like ~=embed- and are descendants of figure with
+		// class op-social or op-interactive.
+		foreach ( $xpath->query( '//figure[contains(@class, \'op-social\') or contains(@class, \'op-interactive\')]//*[self::span or self::div][contains(@class, \'embed-\')]' ) as $node ) {
+			$this->unwrap_node( $node );
+		}
+
+		// Try to avoid double iframes for youtube videos. Shows them full width.
+		foreach ( $xpath->query( '//figure[starts-with(@class, \'op-\')]/iframe/iframe[contains(@class, \'youtube-player\')]' ) as $iframe ) {
+			if ( 1 === $iframe->parentNode->childNodes->length ) {
+				$this->unwrap_node( $iframe->parentNode );
+			}
+		}
+
+		// Try to avoid double iframes for vine embeds. Shows them full width.
+		foreach ( $xpath->query( '//figure[starts-with(@class, \'op-\')]/iframe/iframe[contains(@class, \'vine-embed\')]' ) as $iframe ) {
+
+			// Strip scripts.
+			$scripts = $iframe->parentNode->getElementsByTagName( 'script' );
+			while ( $scripts->length > 0 ) {
+				$item = $scripts->item( 0 );
+				$item->parentNode->removeChild( $item );
+			}
+
+			$this->unwrap_node( $iframe->parentNode );
+		}
+
+		// Remove P and <br> tags from brightcove embed.
+		foreach ( $xpath->query( '//div[contains(@class, \'brightcove-embed\')]' ) as $brightcove ) {
+
+			$br_nodes = $brightcove->parentNode->getElementsByTagName( 'br' );
+			$p_nodes  = $brightcove->parentNode->getElementsByTagName( 'p' );
+
+			while ( $br_nodes->length > 0 ) {
+				$br_nodes->item( 0 )->parentNode->removeChild( $br_nodes->item( 0 ) );
+			}
+
+			while ( $p_nodes->length > 0 ) {
+				$this->unwrap_node( $p_nodes->item(0) );
+			}
+
+		}
+
+		// Remove brightcove width/height params.
+		foreach ( $xpath->query( '//div[contains(@class, \'brightcove-embed\')]//param[@name="width" or @name="height"]' ) as $node ) {
+			if ( $node->parentNode ) {
+				$node->parentNode->removeChild( $node );
+			}
+		}
+
+	}
+
+	/**
+	 * Ensure Facebook embedded posts are of correct format (i.e. FB embedded post).
+	 * Load FB scripts for embeds.
+	 *
+	 * Ref: https://developers.facebook.com/docs/plugins/embedded-posts
+	 *
+	 * @param string   $html    HTML markup to be embeded into post content.
+	 * @param string   $url     The attempted embed URL.
+	 * @param array    $attr    An array of shortcode attributes.
+	 *
+	 * @return string           Facebook embed code with required script.
+	 */
+	public function reformat_facebook_embed( $html, $url, $attr ) {
+
+		// If the embed is any kind of facebook embed - replace its markup with FB embedded post.
+		// i.e. ignore original markup and replace with correct one.
+		// Can't use precise regex, as we don't really know what WP.com is doing here!
+		if ( false !== strpos( $url, 'facebook.com' ) ) {
+
+			// Replace markup to FB embedded post.
+			$html = sprintf(
+				'<div class="fb-post" data-href="%s"></div>',
+				esc_url( $url )
+			);
+
+			// Add FB SDK script.
+			$html .= '<div id="fb-root"></div> <script>(function(d, s, id) { var js, fjs = d.getElementsByTagName(s)[0]; if (d.getElementById(id)) return; js = d.createElement(s); js.id = id; js.src = "//connect.facebook.net/en_US/all.js#xfbml=1"; fjs.parentNode.insertBefore(js, fjs); }(document, "script", "facebook-jssdk"));</script>';
+		}
+
+		return $html;
+	}
+
+	/**
+	 * Ensure brightcove scripts are loaded.
+	 *
+	 * @param  string $embed   Embed markup.
+	 * @param  string $matches Embed url regex matches.
+	 * @param  array  $attr    Attr.
+	 * @param  string $url     URL.
+	 *
+	 * @return string Embed markup.
+	 */
+	public function load_brightcove_scripts( $embed, $matches, $attr, $url ) {
+		global $wp_scripts;
+
+		// Ensure scripts are registered.
+		if ( ! did_action( 'wp_enqueue_scripts' ) ) {
+			do_action( 'wp_enqueue_scripts' );
+		}
+
+		// Check brightcove scripts are registered.
+		if ( ! wp_script_is( 'brightcove', 'registered' ) ) {
+			return $embed;
+		}
+
+		// Manually build script. Ensures always loaded, including multiple times.
+		$embed .= sprintf( '<script src="%s"></script>', $wp_scripts->registered['brightcove']->src );
+
+		$embed .= '<style>';
+		$embed .= '.brightcove-embed { position: relative; padding-bottom: 56.25%; /* 16/9 ratio */ height: 0; overflow: hidden; }';
+		$embed .= '.brightcove-embed object { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }';
+		$embed .= '</style>';
+
+		return $embed;
+	}
+
+	/**
+	 * Setup DOM and XPATH objects for formatting post content.
 	 * Introduces `simple_fb_reformat_post_content` filter, so that post content
 	 * can be formatted as necessary and dom/xpath objects re-used.
 	 *
@@ -331,11 +598,17 @@ class Simple_FB_Instant_Articles {
 	 */
 	public function reformat_post_content( $post_content ) {
 
-		$dom = new \DOMDocument();
+		$dom = new \DomDocument();
 
 		// Parse post content to generate DOM document.
 		// Use loadHTML as it doesn't need to be well-formed to load.
-		@$dom->loadHTML( '<html><body>' . $post_content . '</body></html>' );
+		// Charset meta tag required to ensure it correctly detects the encoding.
+		@$dom->loadHTML( sprintf(
+			'<html><head><meta http-equiv="Content-Type" content="%s" charset="%s"/></head><body>%s</body></html>',
+			get_bloginfo( 'html_type' ),
+			get_bloginfo( 'charset' ),
+			$post_content
+		) );
 
 		// Stop - if dom isn't generated.
 		if ( ! $dom ) {
@@ -347,17 +620,18 @@ class Simple_FB_Instant_Articles {
 		// Allow to render post content via action.
 		do_action_ref_array( 'simple_fb_reformat_post_content', array( &$dom, &$xpath ) );
 
-		// Get the FB formatted post content HTML.
+		// Get the FB IA formatted post content HTML.
 		$body_node = $dom->getElementsByTagName( 'body' )->item( 0 );
-		return $this->get_html_for_node( $body_node );
+
+		return $this->get_node_inner_html( $body_node );
 	}
 
 	/**
-	 * Renders pull quotes into FB AI format.
+	 * Renders pull quotes into FB IA format.
 	 * Ref: https://developers.facebook.com/docs/instant-articles/reference/pullquote
 	 *
-	 * @param DOMDocument $dom   Dom object generated for post content.
-	 * @param DOMXPath    $xpath Xpath object generated for post content.
+	 * @param DOMDocument $dom   DOM object generated for post content.
+	 * @param DOMXPath    $xpath XPATH object generated for post content.
 	 */
 	public function render_pull_quotes( \DOMDocument &$dom, \DOMXPath &$xpath ) {
 
@@ -368,9 +642,9 @@ class Simple_FB_Instant_Articles {
 			$cite = $node->getElementsByTagName( 'cite' )->item( 0 );
 			@$cite->parentNode->removeChild( $cite );
 
-			$pull_quote_html = $this->get_html_for_node( $node );
+			$pull_quote_html = $this->get_node_inner_html( $node );
 
-			// FB AI pull quote format.
+			// FB IA pull quote format.
 			$fb_pull_quote = sprintf(
 				'<aside>%s<cite>%s</cite></aside>',
 				wp_kses( $pull_quote_html,
@@ -384,7 +658,7 @@ class Simple_FB_Instant_Articles {
 				esc_html( $cite->nodeValue )
 			);
 
-			// Replace original pull quotes with FB AI marked up ones.
+			// Replace original pull quotes with FB IA marked up ones.
 			$new_node = $dom->createDocumentFragment();
 			$new_node->appendXML( $fb_pull_quote );
 			$node->parentNode->replaceChild( $new_node, $node );
@@ -392,16 +666,128 @@ class Simple_FB_Instant_Articles {
 	}
 
 	/**
-	 * Append Google Analytics (GA) script in the FB IA format
+	 * Reformat images into FB IA format.
+	 *
+	 * Ensure they are child of <figure>.
+	 * Consider <img> with parent <figure> already been converted to FB IA format.
+	 *
+	 * Ref: https://developers.facebook.com/docs/instant-articles/reference/image
+	 *
+	 * @param DOMDocument $dom   DOM object generated for post content.
+	 * @param DOMXPath    $xpath XPATH object generated for post content.
+	 */
+	public function render_images( \DOMDocument &$dom, \DOMXPath &$xpath ) {
+
+		// Get all images that are not children of figure already.
+		foreach ( $xpath->query( '//img[not(parent::figure)]' ) as $node ) {
+
+			$figure   = $dom->createElement( 'figure' );
+			$top_node = $node;
+
+			// If image node is not a direct child of the body, we need to move it there.
+			// Recurse up the tree looking for highest level parent/grandparent node.
+			while ( $top_node->parentNode && 'body' !== $top_node->parentNode->nodeName ) {
+				$top_node = $top_node->parentNode;
+			}
+
+			// Insert after the parent/grandparent node.
+			// Workaround to handle the fact only insertBefore exists.
+			try {
+				$top_node->parentNode->insertBefore( $figure, $top_node->nextSibling );
+			} catch( \Exception $e ) {
+				$top_node->parentNode->appendChild( $figure );
+			}
+
+			$figure->appendChild( $node );
+		}
+	}
+
+	/**
+	 * Remove empty elements from list of tag names.
+	 *
+	 * @param  \DOMDocument &$dom   DOM object generated for post content.
+	 * @param  \DOMXPath    &$xpath XPATH object generated for post content.
+	 *
+	 * @return void
+	 */
+	public function cleanup_empty_nodes( \DOMDocument &$dom, \DOMXPath &$xpath ) {
+
+		$target_tags = array( 'p', 'a' );
+
+		// Keep track of whether any empty nodes have been found.
+		$found = false;
+
+		foreach ( $target_tags as $target_tag ) {
+
+			$list  = $xpath->query( '//' . $target_tag . '[not(node())]' );
+
+			// Update found. But don't set back to false.
+			$found = $found || (bool) $list->length;
+
+			foreach ( $list as $node ) {
+				$node->parentNode->removeChild( $node );
+			}
+
+		}
+
+		// If we found anything, run this again.
+		// Ensures we catch any empty nodes created whilst cleaning up.
+		if ( $found ) {
+			$this->cleanup_empty_nodes( $dom, $xpath );
+		}
+
+	}
+
+	/**
+	 * Facebook throws a warning for all headings below h2.
+	 *
+	 * Replace with h2s.
+	 *
+	 * @param  \DOMDocument &$dom   DOM object generated for post content.
+	 * @param  \DOMXPath    &$xpath XPATH object generated for post content.
+	 *
+	 * @return void
+	 */
+	public function fix_headings( \DOMDocument &$dom, \DOMXPath &$xpath ) {
+
+		$headings = array( 'h3', 'h4', 'h5', 'h6' );
+
+		foreach ( $headings as $heading_tag ) {
+
+			$headings = $dom->getElementsByTagName( $heading_tag );
+
+			while ( $headings->length ) {
+
+				$node = $headings->item( 0 );
+				$h2   = $dom->createElement( 'h2' );
+
+				while ( $node->childNodes->length > 0 ) {
+					$h2->appendChild( $node->childNodes->item( 0 ) );
+				}
+
+				$node->parentNode->replaceChild( $h2, $node );
+			}
+		}
+	}
+
+	/**
+	 * Append all available analytics tracking scripts in the FB IA format
 	 * to the post content.
 	 *
-	 * @param string $post_content Post content.
+	 * @param string   $post_content Post content.
+	 * @param null|int $post_id      Post ID.
 	 *
-	 * @return string Post content with added GA script in FB IA format.
+	 * @return string Post content with added analytics scripts in FB IA format.
 	 */
-	public function append_google_analytics_code( $post_content ) {
+	public function append_analytics_code( $post_content, $post_id = null ) {
+
+		$post_id  = $post_id ?: get_the_ID();
 
 		$post_content .= $this->get_google_analytics_code();
+		$post_content .= $this->get_simple_reach_analytics_code();
+		$post_content .= $this->get_omniture_code( $post_id );
+		$post_content .= $this->get_chartbeat_analytics_code();
+
 		return $post_content;
 	}
 
@@ -414,17 +800,43 @@ class Simple_FB_Instant_Articles {
 	 */
 	public function get_google_analytics_code() {
 
-		$analytics_template_file = trailingslashit( $this->template_path ) . 'script-ga.php';
-		$ga_profile_id           = get_option( 'lawrence_ga_tracking_id' );
-
-		if ( ! $ga_profile_id ) {
+		if ( ! $ga_profile_id = get_option( 'lawrence_ga_tracking_id' ) ) {
 			return;
 		}
 
-		ob_start();
-		require( $analytics_template_file );
-		return ob_get_clean();
+		return $this->render_template( 'script-ga', array( 'ga_profile_id' => $ga_profile_id ) );
+	}
 
+	/**
+	 * Get Simple Reach (SR) script in the FB IA format.
+	 *
+	 * Ref: https://developers.facebook.com/docs/instant-articles/reference/analytics
+	 *
+	 * @return string SR script in FB IA format.
+	 */
+	protected function get_simple_reach_analytics_code() {
+
+		if ( function_exists( 'lawrence_simple_reach_analytics' ) ) {
+			return $this->render_template( 'script-simple-reach' );
+		}
+	}
+
+	/**
+	 * Get Chartbeat script in the FB IA format.
+	 *
+	 * Ref: https://developers.facebook.com/docs/instant-articles/reference/analytics
+	 *
+	 * @return string Chartbeat script in FB IA format.
+	 */
+	protected function get_chartbeat_analytics_code() {
+
+		if (
+			lawrence_option_enabled( 'usat_chartbeat_enabled' )
+			&& function_exists( 'usat_chartbeat_add_header' )
+			&& function_exists( 'usat_chartbeat_add_footer' )
+		) {
+			return $this->render_template( 'script-chartbeat' );
+		}
 	}
 
 	/**
@@ -436,20 +848,8 @@ class Simple_FB_Instant_Articles {
 	 */
 	public function append_ad_code( $post_content ) {
 
-		$post_content .= $this->get_ad_code();
+		$post_content .= $this->render_template( 'script-ad' );
 		return $post_content;
-	}
-
-	/**
-	 * Get Ad code in the FB IA format.
-	 *
-	 * @return string Ad script in FB IA format.
-	 */
-	public function get_ad_code() {
-
-		ob_start();
-		require( trailingslashit( $this->template_path ) . 'ad.php' );
-		return ob_get_clean();
 	}
 
 	/**
@@ -459,14 +859,10 @@ class Simple_FB_Instant_Articles {
 	 */
 	protected function get_ad_targeting_params() {
 
-		$args    = array( 'fields' => 'names' );
-		$tags    = wp_get_post_tags( get_the_ID(), $args );       // get tag names
-		$cats    = wp_get_post_categories( get_the_ID(), $args ); // get category names
-		$authors = (array) get_coauthors( get_the_ID() );         // get authors
-
-		$authors = array_map( function( $author ) {
-			return $author->display_name;
-		}, array_filter( $authors ) );
+		// Note use of get_the_terms + wp_list_pluck as these are cached ang get_the_* is not.
+		$tags    = wp_list_pluck( (array) get_the_terms( get_the_ID(), 'post_tag' ), 'name' );
+		$cats    = wp_list_pluck( (array) get_the_terms( get_the_ID(), 'category' ), 'name' );
+		$authors = wp_list_pluck( get_coauthors( get_the_ID() ), 'display_name' );
 
 		$url_bits = parse_url( home_url() );
 
@@ -478,6 +874,39 @@ class Simple_FB_Instant_Articles {
 		);
 
 		return $targeting_params;
+	}
+
+	/**
+	 * Get the omniture code markup.
+	 *
+	 * @param mixed $post_id  Post ID.
+	 *
+	 * @return string HTML string.
+	 */
+	function get_omniture_code( $post_id ) {
+
+		$tags     = wp_list_pluck( (array) get_the_terms( $post_id, 'post_tag' ), 'name' );
+		$cats     = wp_list_pluck( (array) get_the_terms( $post_id, 'category' ), 'name' );
+		$keywords = array_values( array_unique( array_merge( $cats, $tags ) ) );
+
+		$omniture_data = array(
+			'cobrand_vendor'   => 'facebookinstantarticle',
+			'assetid'          => $post_id,
+			'byline'           => coauthors( ',', ' and ', null, null, false ),
+			'contenttype'      => 'text',
+			'cst'              => 'sports/ftw',
+			'eventtype'        => 'page:load',
+			'linkTrackVars'    => 'prop1',
+			'ssts'             => 'sports/ftw',
+			'pathName'         => get_permalink( $post_id ),
+			'taxonomykeywords' => implode( ',', $keywords ),
+			'topic'            => 'sports',
+			'videoincluded'    => 'No'
+		);
+
+		$url_bits = parse_url( home_url() );
+
+		return $this->render_template( 'script-omniture', array( 'omniture_data' => $omniture_data ) );
 	}
 
 	/**
@@ -493,20 +922,142 @@ class Simple_FB_Instant_Articles {
 	}
 
 	/**
-	 * Generates HTML string for DOM node object.
+	 * Prepend full width media.
 	 *
-	 * @param DOMNode $node Node object to generate the HTML string for.
+	 * This functionality is mostly a duplicate of parts/single/format-video.
 	 *
-	 * @return string       HTML string/markup for supplied DOM node.
+	 * @param  string $content Post content.
+	 * @param  mixed  $post_id Post id.
+	 *
+	 * @return string Post content.
 	 */
-	protected function get_html_for_node( \DOMNode $node ) {
+	public function prepend_full_width_media( $content, $post_id = null ) {
+		global $wp_embed;
+
+		$post_id       = $post_id ?: get_the_ID();
+		$url           = get_post_meta( $post_id, '_format_video_embed', true );
+		$path_info     = pathinfo( $url );
+		$image_formats = array( 'png', 'jpg', 'jpeg', 'tiff', 'gif' );
+		$is_image      = ! empty( $path_info['extension'] ) && in_array( strtolower( $path_info['extension'] ), $image_formats );
+		$media_html    = '';
+
+		if ( $url && $is_image ) {
+			$media_html = sprintf( '<figure><img src="%s"/></figure>', esc_url( $url ) );
+		} elseif ( $url && ! $is_image ) {
+			$media_html = $wp_embed->autoembed( $url );
+		}
+
+		return $media_html . $content;
+	}
+
+	/**
+	 * Wrap shortcode output in figure op-interactive + iframe markup to sandbox functionality.
+	 *
+	 * Used to handle generic shortcodes that we don't really want to mess with might be broken.
+	 *
+	 * @param  string $shortcode_tag Shortcode.
+	 * @return void
+	 */
+	protected function sandbox_shortcode_output( $shortcode_tag ) {
+		global $shortcode_tags;
+
+		if ( ! isset( $shortcode_tags[ $shortcode_tag ] ) ) {
+			return;
+		}
+
+		$old_callback = $shortcode_tags[ $shortcode_tag ];
+
+		$shortcode_tags[ $shortcode_tag ] = function() use ( $old_callback ) {
+			$r = '<figure class="op-interactive"><iframe>';
+			$r .= call_user_func_array( $old_callback, func_get_args() );
+			$r .= '</iframe></figure>';
+			return $r;
+		};
+	}
+
+	/**
+	 * Generates HTML string for DOM node's inner markup.
+	 *
+	 * @param DOMNode $node DOM Node object to generate the HTML string for
+	 *                      its inner markup.
+	 *
+	 * @return string       Inner HTML markup for the supplied DOM node.
+	 */
+	protected function get_node_inner_html( \DOMNode $node ) {
 
 		$node_html  = '';
+
 		foreach ( $node->childNodes as $child_node ) {
 			$node_html .= $child_node->ownerDocument->saveHTML( $child_node );
 		}
 
 		return $node_html;
+	}
+
+	/**
+	 * Unwrap node.
+	 *
+	 * @param  \DOMNode $node Node.
+	 *
+	 * @return void
+	 */
+	protected function unwrap_node( \DOMNode $node ) {
+
+		// Insert all child nodes before the current node.
+		// Note pluck from end to ensure order remains correct.
+		while ( $node->childNodes->length > 0 ) {
+			$node->parentNode->insertBefore(
+				$node->childNodes->item( $node->childNodes->length - 1 ),
+				$node
+			);
+		}
+
+		// Remove the now empty node.
+		$node->parentNode->removeChild( $node );
+
+	}
+
+	/**
+	 * Return template code/markup.
+	 *
+	 * @param string $template_name Template file name that resides in 'templates' folder
+	 *                              without extension.
+	 * @param array $data           Variables to be passed to template.
+	 *
+	 * @return string               Template code/markup.
+	 */
+	protected function render_template( $template_name, $data = array() ) {
+
+		$template_name = str_replace( '.php', '', $template_name );
+		$template_path = trailingslashit( $this->template_path ) . $template_name . '.php';
+
+		if ( 0 === validate_file( $template_path ) ) {
+			ob_start();
+			require( $template_path );
+			return ob_get_clean();
+		}
+	}
+
+	/**
+	 * Returns the result of a function that outputs,
+	 * to be used further.
+	 *
+	 * Mainly used for returning JS markup that it's otherwise output.
+	 *
+	 * @param $function_name Function name the output of which to return.
+	 *
+	 * @return string|void   Returns output of a function if it exists,
+	 *                       Nothing otherwise.
+	 */
+	protected function return_result_of_print_function( $function_name ) {
+
+		if ( ! function_exists( $function_name ) ) {
+			return;
+		}
+
+		ob_start();
+		call_user_func( $function_name );
+		return ob_get_clean();
 	}
 
 	/**
@@ -546,7 +1097,6 @@ class Simple_FB_Instant_Articles {
 		}
 
 	}
-
 
 }
 

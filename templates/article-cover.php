@@ -16,33 +16,27 @@
 <header>
 
 	<?php
+	$full_width_video  = get_post_meta( get_the_ID(), '_format_video_embed', true );
+	$has_article_cover = ! empty( $full_width_video );
+	$thumbnail_id      = get_post_thumbnail_id();
+
 	// Post featured image as FB IA cover image.
-	if ( $thumb_id = get_post_thumbnail_id() ) :
-
-		$thumb     = wp_get_attachment_image_src( $thumb_id, Simple_FB_Instant_Articles::instance()->image_size );
-		$thumb_url = $thumb[0];
+	if ( ! $has_article_cover && $thumbnail_id ) {
+		Simple_FB_Instant_Articles::instance()->render_image_markup( $thumbnail_id );
+	}
 	?>
-		<figure>
-			<img src="<?php echo esc_url( $thumb_url ); ?>" />
-		</figure>
-
-	<?php endif; ?>
 
 	<?php the_title( '<h1>', '</h1>' ); ?>
 
-	<?php lawrence_the_subheading( '<h2>', '</h2>' ); ?>
+	<?php if ( function_exists( 'the_subheading' ) ) {
+		the_subheading( '<h2>', '</h2>' );
+	} ?>
 
-	<?php
-	// The author(s) of the article.
-	foreach ( get_coauthors() as $author ) :
-		$author = get_user_by( 'id', $author->ID );
-		?>
-
-		<address>
-			<a><?php echo esc_html( $author->display_name ); ?></a>
-		</address>
-
-	<?php endforeach; ?>
+	<?php if ( function_exists( 'coauthors' ) ) : ?>
+		<?php coauthors( '</address>, <address>', ' </address> and <address> ', '<address>', '</address>' ); ?>
+	<?php else : ?>
+		<address><?php the_author(); ?></address>
+	<?php endif; ?>
 
 	<!-- The published and last modified time stamps -->
 	<time class="op-published" dateTime="<?php echo esc_attr( get_the_time( 'c' ) ); ?>"><?php echo esc_html( lawrence_display_date() ); ?></time>
