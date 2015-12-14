@@ -219,7 +219,6 @@ class Simple_FB_Instant_Articles {
 		add_filter( 'the_content', array( $this, 'prepend_full_width_media' ), 50 );
 		add_filter( 'the_content', array( $this, 'reformat_post_content' ), 1000 );
 		add_filter( 'the_content', array( $this, 'append_analytics_code' ), 1100 );
-		add_filter( 'the_content', array( $this, 'append_ad_code' ), 1100 );
 
 		// Post URL for the feed.
 		add_filter( 'the_permalink_rss', array( $this, 'rss_permalink' ) );
@@ -230,6 +229,8 @@ class Simple_FB_Instant_Articles {
 		add_action( 'simple_fb_reformat_post_content', array( $this, 'cleanup_empty_nodes' ), 10, 2 );
 		add_action( 'simple_fb_reformat_post_content', array( $this, 'fix_headings' ), 10, 2 );
 		add_action( 'simple_fb_reformat_post_content', array( $this, 'fix_social_embed' ), 1000, 2 );
+		add_action( 'simple_fb_reformat_post_content', array( $this, 'insert_ads' ), 10, 2 );
+
 	}
 
 	public function rss_permalink( $link ) {
@@ -838,19 +839,6 @@ class Simple_FB_Instant_Articles {
 	}
 
 	/**
-	 * Append Ad script in the FB IA format to the post content.
-	 *
-	 * @param string $post_content Post content.
-	 *
-	 * @return string Post content with added ad script in FB IA format.
-	 */
-	public function append_ad_code( $post_content ) {
-
-		$post_content .= $this->render_template( 'script-ad' );
-		return $post_content;
-	}
-
-	/**
 	 * Get Ad targeting args.
 	 *
 	 * @return array Targeting params.
@@ -1056,6 +1044,60 @@ class Simple_FB_Instant_Articles {
 		ob_start();
 		call_user_func( $function_name );
 		return ob_get_clean();
+	}
+
+	/**
+	 * Insert Ads.
+	 *
+	 * Rules:
+	 * Ads must be at least 100 words from start.
+	 * Ads must not be within 400 words of another ad.
+	 * Or they must be split by a figure element.
+	 *
+	 * This basic implementation inserts after first break after the first 100 words.
+	 *
+	 * @param \DOMNode $dom dom.
+	 *
+	 * @return void
+	 */
+	public function insert_ads( \DOMNode $dom ) {
+
+		$count    = 0;
+		$interval = 500;
+		$ad_count = 0;
+
+		// Initial offset.
+		$count += 300;
+
+		foreach ( $dom->getElementsByTagName('body')->item(0)->childNodes as $node ) {
+
+			// Use wordcount for paragraphs.
+			if ( 'p' === $node->nodeName ) {
+				$count += str_word_count( $node->textContent );
+			// Count embeds as 100 words.
+			} elseif ( 'figure' === $node->nodeName ) {
+				$count += 100;
+			}
+
+			if ( $count >= $interval ) {
+
+				$fragment = $dom->createDocumentFragment();
+				$fragment->appendXML( $this->render_template( 'script-ad' ) );
+				$node->parentNode->insertBefore( $fragment, $node->nextSibling );
+
+				$count = 0;
+				$ad_count++;
+
+			}
+
+		}
+
+		if ( $ad_count < 1 ) {
+			$fragment = $dom->createDocumentFragment();
+			$fragment->appendXML( $this->render_template( 'script-ad' ) );
+			$node->parentNode->appendChild( $fragment );
+		}
+
 	}
 
 }
